@@ -4,12 +4,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const cors = require("cors");
-const dotenv = require("dotenv");
 const path = require("path");
 const { v2: cloudinary } = require("cloudinary");
-
-// Load environment variables
-dotenv.config();
 
 const app = express();
 
@@ -29,53 +25,37 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-console.log("☁️  Cloudinary configured with cloud:", process.env.CLOUDINARY_CLOUD_NAME);
-
-// Upload to Cloudinary - FIXED FOR PDFs
+// Upload to Cloudinary
 const uploadToCloudinary = async (fileBuffer, fileName, mimeType) => {
   return new Promise((resolve, reject) => {
-    // Configure upload based on file type
     let uploadOptions = {
       folder: "erode-pavadi-documents",
-      public_id: fileName.replace(/\.[^/.]+$/, ""), // Remove extension
+      public_id: fileName.replace(/\.[^/.]+$/, ""),
       access_mode: "public",
     };
 
-    // For PDFs and documents - use 'raw' resource type for direct viewing
     if (mimeType === 'application/pdf' || 
         mimeType.includes('msword') || 
         mimeType.includes('document') ||
         mimeType.includes('spreadsheet')) {
       uploadOptions.resource_type = 'raw';
-      uploadOptions.flags = 'attachment:false'; // Allow inline viewing
+      uploadOptions.flags = 'attachment:false';
     } else {
-      // For images and other files
       uploadOptions.resource_type = 'auto';
     }
 
     const uploadStream = cloudinary.uploader.upload_stream(
       uploadOptions,
       (error, result) => {
-        if (error) {
-          console.error("Cloudinary upload error:", error);
-          reject(error);
-        } else {
-          console.log("✅ Cloudinary upload result:", {
-            id: result.public_id,
-            url: result.secure_url,
-            type: result.resource_type
-          });
-          resolve(result);
-        }
+        if (error) reject(error);
+        else resolve(result);
       }
     );
     uploadStream.end(fileBuffer);
   });
 };
 
-// Delete from Cloudinary
 const deleteFromCloudinary = async (publicId) => {
-  // Try deleting as different resource types
   try {
     await cloudinary.uploader.destroy(publicId, { resource_type: "raw" });
   } catch (e) {
@@ -84,163 +64,161 @@ const deleteFromCloudinary = async (publicId) => {
 };
 
 // ======================
-// DATABASE CONNECTION
+// DATABASE - LAZY INITIALIZATION
 // ======================
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-  dialect: "postgres",
-  dialectOptions: {
-    ssl: {
-      require: true,
-      rejectUnauthorized: false,
-    },
-  },
-  logging: false,
-  pool: {
-    max: 5,
-    min: 0,
-    acquire: 30000,
-    idle: 10000,
-  },
-});
+let sequelize;
+let User;
+let Document;
+let isInitialized = false;
 
-const connectDB = async () => {
-  try {
-    await sequelize.authenticate();
-    console.log("✅ PostgreSQL (Neon) Connected Successfully");
-    await sequelize.sync({ alter: true });
-    console.log("✅ Database tables synchronized");
-  } catch (error) {
-    console.error("❌ Database connection failed:", error.message);
-  }
+const initDatabase = async () => {
+  if (isInitialized) return;
+
+  sequelize = new Sequelize(process.env.DATABASE_URL, {
+    dialect: "postgres",
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false,
+      },
+    },
+    logging: false,
+    pool: {
+      max: 5,
+      min: 0,
+      acquire: 30000,
+      idle: 10000,
+    },
+  });
+
+  // User Model
+  User = sequelize.define(
+    "User",
+    {
+      id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true,
+      },
+      username: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+      },
+      password: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      role: {
+        type: DataTypes.ENUM("admin"),
+        defaultValue: "admin",
+      },
+      email: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        validate: {
+          isEmail: true,
+        },
+      },
+    },
+    {
+      timestamps: true,
+      hooks: {
+        beforeCreate: async (user) => {
+          if (user.password) {
+            const salt = await bcrypt.genSalt(10);
+            user.password = await bcrypt.hash(user.password, salt);
+          }
+        },
+        beforeUpdate: async (user) => {
+          if (user.changed("password")) {
+            const salt = await bcrypt.genSalt(10);
+            user.password = await bcrypt.hash(user.password, salt);
+          }
+        },
+      },
+    }
+  );
+
+  User.prototype.comparePassword = async function (candidatePassword) {
+    return await bcrypt.compare(candidatePassword, this.password);
+  };
+
+  // Document Model
+  Document = sequelize.define(
+    "Document",
+    {
+      id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true,
+      },
+      title: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      description: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+      originalName: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      fileSize: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      mimeType: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      cloudinaryId: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      cloudinaryUrl: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      secureUrl: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      isViewable: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true,
+      },
+      isDownloadable: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      uploadedBy: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+    },
+    {
+      timestamps: true,
+    }
+  );
+
+  User.hasMany(Document, { foreignKey: "uploadedBy", as: "documents" });
+  Document.belongsTo(User, { foreignKey: "uploadedBy", as: "uploader" });
+
+  await sequelize.authenticate();
+  await sequelize.sync({ alter: true });
+  
+  isInitialized = true;
 };
-
-// Initialize database connection
-connectDB();
-
-// ======================
-// DATABASE MODELS
-// ======================
-
-// User Model
-const User = sequelize.define(
-  "User",
-  {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true,
-    },
-    username: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      unique: true,
-    },
-    password: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    role: {
-      type: DataTypes.ENUM("admin"),
-      defaultValue: "admin",
-    },
-    email: {
-      type: DataTypes.STRING,
-      allowNull: true,
-      validate: {
-        isEmail: true,
-      },
-    },
-  },
-  {
-    timestamps: true,
-    hooks: {
-      beforeCreate: async (user) => {
-        if (user.password) {
-          const salt = await bcrypt.genSalt(10);
-          user.password = await bcrypt.hash(user.password, salt);
-        }
-      },
-      beforeUpdate: async (user) => {
-        if (user.changed("password")) {
-          const salt = await bcrypt.genSalt(10);
-          user.password = await bcrypt.hash(user.password, salt);
-        }
-      },
-    },
-  }
-);
-
-User.prototype.comparePassword = async function (candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
-};
-
-// Document Model
-const Document = sequelize.define(
-  "Document",
-  {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true,
-    },
-    title: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    description: {
-      type: DataTypes.TEXT,
-      allowNull: true,
-    },
-    originalName: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    fileSize: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-    },
-    mimeType: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    cloudinaryId: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    cloudinaryUrl: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    secureUrl: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    isViewable: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true,
-    },
-    isDownloadable: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    },
-    uploadedBy: {
-      type: DataTypes.UUID,
-      allowNull: true,
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-User.hasMany(Document, { foreignKey: "uploadedBy", as: "documents" });
-Document.belongsTo(User, { foreignKey: "uploadedBy", as: "uploader" });
 
 // ======================
 // AUTH MIDDLEWARE
 // ======================
 const protect = async (req, res, next) => {
   try {
+    await initDatabase();
+    
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
       token = req.headers.authorization.split(" ")[1];
@@ -299,11 +277,52 @@ const generateToken = (id) => {
 };
 
 // ======================
-// AUTH ROUTES
+// ROUTES
 // ======================
+
+app.get("/", async (req, res) => {
+  res.json({
+    message: "Erode Periya Pavadi Trust - Document Management API",
+    version: "1.0.0",
+    storage: "Cloudinary",
+    status: "Running on Vercel ✅",
+    endpoints: {
+      health: "/api/health",
+      auth: {
+        register: "POST /api/auth/register",
+        login: "POST /api/auth/login",
+      },
+      documents: {
+        list: "GET /api/documents",
+        adminList: "GET /api/documents/admin",
+        upload: "POST /api/documents/upload",
+        get: "GET /api/documents/:id",
+        update: "PUT /api/documents/:id",
+        delete: "DELETE /api/documents/:id",
+      },
+    },
+  });
+});
+
+app.get("/api/health", async (req, res) => {
+  try {
+    await initDatabase();
+    res.json({
+      message: "Erode Periya Pavadi Trust API is running",
+      database: "PostgreSQL (Neon) ✅",
+      storage: "Cloudinary ✅",
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      status: "OK",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message, error: "Database connection failed" });
+  }
+});
 
 app.post("/api/auth/register", async (req, res) => {
   try {
+    await initDatabase();
     const { username, password, email } = req.body;
 
     if (!username || !password) {
@@ -336,6 +355,7 @@ app.post("/api/auth/register", async (req, res) => {
 
 app.post("/api/auth/login", async (req, res) => {
   try {
+    await initDatabase();
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -367,10 +387,6 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// ======================
-// DOCUMENT ROUTES
-// ======================
-
 app.post("/api/documents/upload", protect, upload.single("file"), async (req, res) => {
   try {
     const { title, description, isViewable, isDownloadable } = req.body;
@@ -386,16 +402,11 @@ app.post("/api/documents/upload", protect, upload.single("file"), async (req, re
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     const fileName = uniqueSuffix + path.extname(req.file.originalname);
 
-    console.log("📤 Uploading to Cloudinary:", fileName, "Type:", req.file.mimetype);
-
-    // Upload to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(
       req.file.buffer,
       fileName,
       req.file.mimetype
     );
-
-    console.log("✅ Cloudinary upload success:", cloudinaryResult.public_id);
 
     const document = await Document.create({
       title,
@@ -413,13 +424,13 @@ app.post("/api/documents/upload", protect, upload.single("file"), async (req, re
 
     res.status(201).json(document);
   } catch (error) {
-    console.error("Upload error:", error.message);
     res.status(500).json({ message: error.message });
   }
 });
 
 app.get("/api/documents", async (req, res) => {
   try {
+    await initDatabase();
     const documents = await Document.findAll({
       where: { isViewable: true },
       order: [["createdAt", "DESC"]],
@@ -450,6 +461,7 @@ app.get("/api/documents/admin", protect, async (req, res) => {
 
 app.get("/api/documents/:id", async (req, res) => {
   try {
+    await initDatabase();
     const document = await Document.findByPk(req.params.id);
 
     if (!document) {
@@ -498,7 +510,6 @@ app.delete("/api/documents/:id", protect, async (req, res) => {
     if (document.cloudinaryId) {
       try {
         await deleteFromCloudinary(document.cloudinaryId);
-        console.log("✅ Deleted from Cloudinary:", document.cloudinaryId);
       } catch (error) {
         console.error("Cloudinary delete error:", error.message);
       }
@@ -511,68 +522,9 @@ app.delete("/api/documents/:id", protect, async (req, res) => {
   }
 });
 
-// ======================
-// HEALTH CHECK
-// ======================
-app.get("/api/health", (req, res) => {
-  res.json({
-    message: "Erode Periya Pavadi Trust API is running",
-    database: "PostgreSQL (Neon)",
-    storage: "Cloudinary ✅",
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-    status: "OK",
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/", (req, res) => {
-  res.json({
-    message: "Erode Periya Pavadi Trust - Document Management API",
-    version: "1.0.0",
-    storage: "Cloudinary",
-    endpoints: {
-      health: "/api/health",
-      auth: {
-        register: "POST /api/auth/register",
-        login: "POST /api/auth/login",
-      },
-      documents: {
-        list: "GET /api/documents",
-        adminList: "GET /api/documents/admin",
-        upload: "POST /api/documents/upload",
-        get: "GET /api/documents/:id",
-        update: "PUT /api/documents/:id",
-        delete: "DELETE /api/documents/:id",
-      },
-    },
-  });
-});
-
-// ======================
-// ERROR HANDLING
-// ======================
 app.use((err, req, res, next) => {
   console.error("Server Error:", err.stack);
   res.status(500).json({ message: err.message || "Server Error" });
 });
 
-// ======================
-// START SERVER (Local Development Only)
-// ======================
-const PORT = process.env.PORT || 5000;
-
-// Only start server if not in Vercel (for local development)
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`\n${"=".repeat(50)}`);
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📍 Local: http://localhost:${PORT}`);
-    console.log(`📍 Health: http://localhost:${PORT}/api/health`);
-    console.log(`💾 Database: Neon PostgreSQL ✅`);
-    console.log(`☁️  Storage: Cloudinary ✅`);
-    console.log(`${"=".repeat(50)}\n`);
-  });
-}
-
-// Export for Vercel
 module.exports = app;
