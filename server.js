@@ -111,9 +111,11 @@ const connectDB = async () => {
     console.log("✅ Database tables synchronized");
   } catch (error) {
     console.error("❌ Database connection failed:", error.message);
-    process.exit(1);
   }
 };
+
+// Initialize database connection
+connectDB();
 
 // ======================
 // DATABASE MODELS
@@ -555,23 +557,22 @@ app.use((err, req, res, next) => {
 });
 
 // ======================
-// START SERVER
+// START SERVER (Local Development Only)
 // ======================
 const PORT = process.env.PORT || 5000;
 
-const startServer = async () => {
-  console.log("🚀 Starting Erode Periya Pavadi Trust API...\n");
-  await connectDB();
-
+// Only start server if not in Vercel (for local development)
+if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`\n${"=".repeat(50)}`);
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📍 Local: http://localhost:${PORT}`);
     console.log(`📍 Health: http://localhost:${PORT}/api/health`);
     console.log(`💾 Database: Neon PostgreSQL ✅`);
-    console.log(`☁️  Storage: Cloudinary (${process.env.CLOUDINARY_CLOUD_NAME}) ✅`);
+    console.log(`☁️  Storage: Cloudinary ✅`);
     console.log(`${"=".repeat(50)}\n`);
   });
-};
+}
 
-startServer();
+// Export for Vercel
+module.exports = app;
