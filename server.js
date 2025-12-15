@@ -64,152 +64,169 @@ const deleteFromCloudinary = async (publicId) => {
 };
 
 // ======================
-// DATABASE - LAZY INITIALIZATION
+// DATABASE - LAZY INITIALIZATION WITH BETTER TIMEOUTS
 // ======================
 let sequelize;
 let User;
 let Document;
 let isInitialized = false;
+let initPromise = null;
 
 const initDatabase = async () => {
+  // If already initialized, return immediately
   if (isInitialized) return;
-
-  sequelize = new Sequelize(process.env.DATABASE_URL, {
-    dialect: "postgres",
-    dialectOptions: {
-      ssl: {
-        require: true,
-        rejectUnauthorized: false,
-      },
-    },
-    logging: false,
-    pool: {
-      max: 5,
-      min: 0,
-      acquire: 30000,
-      idle: 10000,
-    },
-  });
-
-  // User Model
-  User = sequelize.define(
-    "User",
-    {
-      id: {
-        type: DataTypes.UUID,
-        defaultValue: DataTypes.UUIDV4,
-        primaryKey: true,
-      },
-      username: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-      },
-      password: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      role: {
-        type: DataTypes.ENUM("admin"),
-        defaultValue: "admin",
-      },
-      email: {
-        type: DataTypes.STRING,
-        allowNull: true,
-        validate: {
-          isEmail: true,
-        },
-      },
-    },
-    {
-      timestamps: true,
-      hooks: {
-        beforeCreate: async (user) => {
-          if (user.password) {
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(user.password, salt);
-          }
-        },
-        beforeUpdate: async (user) => {
-          if (user.changed("password")) {
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(user.password, salt);
-          }
-        },
-      },
-    }
-  );
-
-  User.prototype.comparePassword = async function (candidatePassword) {
-    return await bcrypt.compare(candidatePassword, this.password);
-  };
-
-  // Document Model
-  Document = sequelize.define(
-    "Document",
-    {
-      id: {
-        type: DataTypes.UUID,
-        defaultValue: DataTypes.UUIDV4,
-        primaryKey: true,
-      },
-      title: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      description: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-      },
-      originalName: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      fileSize: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-      },
-      mimeType: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      cloudinaryId: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-      cloudinaryUrl: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-      secureUrl: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-      isViewable: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: true,
-      },
-      isDownloadable: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false,
-      },
-      uploadedBy: {
-        type: DataTypes.UUID,
-        allowNull: true,
-      },
-    },
-    {
-      timestamps: true,
-    }
-  );
-
-  User.hasMany(Document, { foreignKey: "uploadedBy", as: "documents" });
-  Document.belongsTo(User, { foreignKey: "uploadedBy", as: "uploader" });
-
-  await sequelize.authenticate();
-  await sequelize.sync({ alter: true });
   
-  isInitialized = true;
+  // If initialization is in progress, wait for it
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    try {
+      sequelize = new Sequelize(process.env.DATABASE_URL, {
+        dialect: "postgres",
+        dialectOptions: {
+          ssl: {
+            require: true,
+            rejectUnauthorized: false,
+          },
+          connectTimeout: 60000, // 60 seconds
+        },
+        logging: false,
+        pool: {
+          max: 5,
+          min: 0,
+          acquire: 60000, // Increased to 60 seconds
+          idle: 10000,
+        },
+      });
+
+      // User Model
+      User = sequelize.define(
+        "User",
+        {
+          id: {
+            type: DataTypes.UUID,
+            defaultValue: DataTypes.UUIDV4,
+            primaryKey: true,
+          },
+          username: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            unique: true,
+          },
+          password: {
+            type: DataTypes.STRING,
+            allowNull: false,
+          },
+          role: {
+            type: DataTypes.ENUM("admin"),
+            defaultValue: "admin",
+          },
+          email: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            validate: {
+              isEmail: true,
+            },
+          },
+        },
+        {
+          timestamps: true,
+          hooks: {
+            beforeCreate: async (user) => {
+              if (user.password) {
+                const salt = await bcrypt.genSalt(10);
+                user.password = await bcrypt.hash(user.password, salt);
+              }
+            },
+            beforeUpdate: async (user) => {
+              if (user.changed("password")) {
+                const salt = await bcrypt.genSalt(10);
+                user.password = await bcrypt.hash(user.password, salt);
+              }
+            },
+          },
+        }
+      );
+
+      User.prototype.comparePassword = async function (candidatePassword) {
+        return await bcrypt.compare(candidatePassword, this.password);
+      };
+
+      // Document Model
+      Document = sequelize.define(
+        "Document",
+        {
+          id: {
+            type: DataTypes.UUID,
+            defaultValue: DataTypes.UUIDV4,
+            primaryKey: true,
+          },
+          title: {
+            type: DataTypes.STRING,
+            allowNull: false,
+          },
+          description: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+          },
+          originalName: {
+            type: DataTypes.STRING,
+            allowNull: false,
+          },
+          fileSize: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+          },
+          mimeType: {
+            type: DataTypes.STRING,
+            allowNull: false,
+          },
+          cloudinaryId: {
+            type: DataTypes.STRING,
+            allowNull: true,
+          },
+          cloudinaryUrl: {
+            type: DataTypes.STRING,
+            allowNull: true,
+          },
+          secureUrl: {
+            type: DataTypes.STRING,
+            allowNull: true,
+          },
+          isViewable: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: true,
+          },
+          isDownloadable: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false,
+          },
+          uploadedBy: {
+            type: DataTypes.UUID,
+            allowNull: true,
+          },
+        },
+        {
+          timestamps: true,
+        }
+      );
+
+      User.hasMany(Document, { foreignKey: "uploadedBy", as: "documents" });
+      Document.belongsTo(User, { foreignKey: "uploadedBy", as: "uploader" });
+
+      await sequelize.authenticate();
+      await sequelize.sync({ alter: true });
+      
+      isInitialized = true;
+      console.log("✅ Database initialized successfully");
+    } catch (error) {
+      console.error("❌ Database initialization failed:", error.message);
+      initPromise = null; // Reset so it can retry
+      throw error;
+    }
+  })();
+
+  return initPromise;
 };
 
 // ======================
@@ -280,7 +297,7 @@ const generateToken = (id) => {
 // ROUTES
 // ======================
 
-app.get("/", async (req, res) => {
+app.get("/", (req, res) => {
   res.json({
     message: "Erode Periya Pavadi Trust - Document Management API",
     version: "1.0.0",
@@ -311,12 +328,18 @@ app.get("/api/health", async (req, res) => {
       message: "Erode Periya Pavadi Trust API is running",
       database: "PostgreSQL (Neon) ✅",
       storage: "Cloudinary ✅",
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       status: "OK",
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    res.status(500).json({ message: error.message, error: "Database connection failed" });
+    // Return 200 even if DB fails, showing partial health
+    res.json({
+      message: "Erode Periya Pavadi Trust API is running",
+      database: `PostgreSQL (Neon) - ${error.message}`,
+      storage: "Cloudinary ✅",
+      status: "Partial - DB connection pending",
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
