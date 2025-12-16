@@ -6,6 +6,14 @@ const multer = require("multer");
 const cors = require("cors");
 const path = require("path");
 const { v2: cloudinary } = require("cloudinary");
+const { neonConfig, Pool } = require("@neondatabase/serverless");
+const pg = require("pg");
+
+// Configure Neon for serverless
+neonConfig.webSocketConstructor = require("ws");
+neonConfig.useSecureWebSocket = true;
+neonConfig.pipelineTLS = false;
+neonConfig.pipelineConnect = false;
 
 const app = express();
 
@@ -83,19 +91,21 @@ const initDatabase = async () => {
     try {
       sequelize = new Sequelize(process.env.DATABASE_URL, {
         dialect: "postgres",
+        dialectModule: pg,
         dialectOptions: {
           ssl: {
             require: true,
             rejectUnauthorized: false,
           },
-          connectTimeout: 60000, // 60 seconds
+          connectTimeout: 60000,
         },
         logging: false,
         pool: {
-          max: 5,
+          max: 2,
           min: 0,
-          acquire: 60000, // Increased to 60 seconds
-          idle: 10000,
+          acquire: 60000,
+          idle: 0,
+          evict: 60000,
         },
       });
 
